@@ -34,6 +34,8 @@ class Rate{
 	private $base_volume_market_share;
 	private $breaking_point;				// Paying / (got - fee) ??
 	private $book;
+	private $spread;
+	private $percent_wise;
 
 	function __construct(&$exchange, $from, $to, $last, $lowest_ask, $highest_bid, $percent_change, $base_volume, $quote_volume, $is_frozen, $high_24hr, $low_24hr){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
@@ -59,14 +61,16 @@ class Rate{
 		$this->refresh();
 		$this->base_volume_market_share = 0;
 		$this->book = array();
+		$this->spread = bcsub($lowest_ask, $highest_bid);
+		$this->percent_wise = bcdiv($this->spread, $lowest_ask, EXCHANGE_ROUND_DECIMALS * 2);
 	}
 
-	public function get_historic_data($start,$end){
+	public function get_historic_data($start, $end){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function &rate::get_historic_data($start,$end)");
-		$answer = $this->exchange->get_historic_data($this->pair,$start,$end,$this->period);
+			syslog(LOG_INFO|LOG_LOCAL1, "public function &rate::get_historic_data($start, $end)");
+		$answer = $this->exchange->get_historic_data($this->pair, $start, $end, $this->period);
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function &rate::get_historic_data($start,$end) = ".print_r($answer, true));
+			syslog(LOG_INFO|LOG_LOCAL1, "public function &rate::get_historic_data($start, $end) = ".print_r($answer, true));
 		return $answer;
 	}
 
@@ -95,11 +99,11 @@ class Rate{
 		}
 
 		if (is_null($start)){
-			$start = $end - 604800;
+			$start = $end - 1296000;
 		}
 		else{
 		      if ($start >= $end){
-				$start = $end - 604800;
+				$start = $end - 1296000;
 		      }
 		}
 
@@ -119,7 +123,7 @@ class Rate{
 		/* TODO: Be sure we get at least 30 samples */
 		if ($elements & RATE_REFRESH_TICKER){
 			$this->historial = $this->get_historic_data($start, $end);
-			$max = 0; $min = 999999999; $nReg=count($this->historial)-1;
+			$max = 0; $min = 999999999; $nReg = count($this->historial);
 			for($i = 0 ; $i < $nReg; $i++){
 				$h = $this->historial[$i];
 				$max = bcmax($max, $h['high']);
@@ -172,7 +176,7 @@ class Rate{
 			}
 			else{
 			      if ($start >= $end){
-					$start = $end - 604800;
+					$start = $end - 1296000;
 			      }
 			}
 
@@ -294,7 +298,7 @@ class Rate{
 	*/
 	public function &set_market_share($max){
 		if (bccomp($max, 0) > 0){
-			$this->base_volume_market_share = bcdiv($this->base_volume, $max);
+			$this->base_volume_market_share = bcdiv($this->base_volume, $max, EXCHANGE_ROUND_DECIMALS * 2);
 		}
 		return $this;
 	}
@@ -353,79 +357,178 @@ class Rate{
 	@retval array
 	*/
 	public function book(){
+		$this->book = $this->get_orders();
 		return $this->book;
 	}
 
-	private function exponential_key_average($period, $base_key, $index){
-		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
-			syslog(LOG_INFO|LOG_LOCAL1, "private function rate::exponential_key_average($period, $base_key, $index)");
+	/**
+	@retval float
+	*/
+	public function spread(){
+		$this->book = $this->get_orders();
+		return $this->spread;
+	}
 
-		$i = 1; $key = "$base_key$period"; $nkey = "normallized_$key";
-		foreach ($this->historial as &$h){	// Last element is most recent
-			if ($i == 1){
-				$h[$key] = $h[$index]; // number_format($h[$index], EXCHANGE_ROUND_DECIMALS, ".", "");
-				$h[$nkey] = 1;
-			}
-			else{
-				$a = bcdiv(2, bcadd(1, $period), EXCHANGE_ROUND_DECIMALS * 2);
-				$h[$key] = bcadd(bcmul($a,  $h[$index], EXCHANGE_ROUND_DECIMALS * 2), bcmul(bcsub(1, $a, EXCHANGE_ROUND_DECIMALS * 2), $previews[$key], EXCHANGE_ROUND_DECIMALS * 1));
+	/**
+	@retval float
+	*/
+	public function percent_wise(){
+		$this->book = $this->get_orders();
+		return $this->percent_wise;
+	}
+
+	private function rename_key($oldkey, $newkey){
+		foreach ($this->historial as &$h){
+			$h[$newkey] = $h[$oldkey];
+			unset($h[$oldkey]);
+		}
+	}
+
+	public function normallize($key = 'close', $index = 'close'){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::normallize($key, $index)");
+
+		$nkey = 'normallized('.$key.','.$index.')';
+		$t = end($this->historial);
+		if (!array_key_exists($nkey, $t)){
+
+			foreach ($this->historial as &$h){	// Last element is the most recent
 				if (bccomp($h[$index], 0) > 0){
-					$h[$nkey] = bcdiv($h[$key], $h[$index]);
+					$h[$nkey] = bcdiv($h[$key], $h[$index], EXCHANGE_ROUND_DECIMALS * 2);
 				}
 				else{
-					$h[$nkey] = 1;
+					$h[$nkey] = 0;
 				}
 			}
-			$previews = $h; $i++;
 		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
-			syslog(LOG_INFO|LOG_LOCAL1, "private function rate::exponential_key_average($period, $base_key, $index)");
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::normallize($key, $index)");
+
+		return $nkey;
 	}
 
-	/**
-	@param integer
-	The number of period for the ema
-	@retval float
-	Returns the EMA
-	*/
-	public function ema($period){
+	public function ema($period = 2, $index = 'close'){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ema($period)");
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ema($period, $index)");
 
-		$this->exponential_key_average($period, "ema", "close");
-
+		$t = end($this->historial);
+		$key = 'ema('.$period.','.$index.')';
+		if (!array_key_exists($key, $t)){
+			$i = 1;
+			//K = 2 ÷(N + 1)
+			$a = bcdiv(2, bcadd(1, $period));
+			foreach ($this->historial as &$h){	// Last element is the most recent
+				if ($i == 1){
+					$h[$key] = number_format($h[$index], EXCHANGE_ROUND_DECIMALS, '.', '');
+				}
+				else{
+					//EMA [today] = (Price [today] x K) + (EMA [yesterday] x (1 – K))
+					$h[$key] = bcadd(bcmul($a,  $h[$index], EXCHANGE_ROUND_DECIMALS * 2), bcmul(bcsub(1, $a, EXCHANGE_ROUND_DECIMALS * 2), $p[$key], EXCHANGE_ROUND_DECIMALS * 2), EXCHANGE_ROUND_DECIMALS * 2);
+				}
+				$p = $h; $i++;
+			}
+		}
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ema($period) = ".print_r($this->historial, true));
-		return $this->historial;
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ema($period, $base_key, $index)");
+
+		return $key;
 	}
 
 	/**
-	@retval float
+	@retval string
+	Returns the Typical Price
+	*/
+	public function tp(){
+		$key = 'tp()';
+		$t = end($this->historial);
+
+		if (!array_key_exists($key, $t)){
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				$t = bcadd($h['high'], $h['low']);
+				$t = bcadd($t, $h['close']);
+				$h[$key] = bcdiv($t, 3);
+			}
+		}
+		return $key;
+	}
+
+	/**
+	@retval array
 	Returns the TR
 	*/
 	public function tr(){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::tr()");
 
-		$i = 1; $key = "tr";
-		foreach ($this->historial as &$h){	// Last element is most rescent
-			if ($i == 1){
-				$previous_close = $h["low"];
+		$i = 1; $key = 'tr()';
+		$t = end($this->historial);
+		if (!array_key_exists($key, $t)){
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				if ($i == 1){
+					$previous_close = $h['low'];
+				}
+				else{
+					$previous_close = $p['close'];
+				}
+				$tr1 = bcsub($h['high'], $h['low']);	
+				$tr2 = bcabs(bcsub($h['high'], $previous_close));
+				$tr3 = bcabs(bcsub($previous_close, $h['low']));
+				$p = $h; $i++;
+				$h[$key] = bcmax($tr1, $tr2, $tr3);
 			}
-			else{
-				$previous_close = $previous["close"];
-			}
-			$tr1 = bcsub($h["high"], $h["low"]);
-			$tr2 = bcsub($h["high"], $previous_close);
-			$tr3 = bcsub($previous_close, $h["low"]);
-			$previous = $h; $i++;
-			$h[$key] = bcmax($tr1, $tr2, $tr3);
 		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::tr() = ".print_r($this->historial, true));
-		return $this->historial;
+
+		return $key;
+	}
+
+	/**
+	@retval array
+	Returns the +DM and -DM
+	*/
+	public function dm(){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::dm()");
+
+		$mkey = '-dm()'; $pkey = '+dm()';
+		$t = end($this->historial);
+
+		if (!array_key_exists($mkey, $t) or !array_key_exists($pkey, $t)){
+			$i = 1;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				if ($i == 1){
+					$h[$pkey] = $h['close'];
+					$h[$mkey] = $h['close'];
+				}
+				else{
+					$upmove = bcsub($h['high'], $p['high']);
+					$downmove = bcsub($p['low'], $h['low']);
+					if ((bccomp($upmove, $downmove) > 0) and (bccomp($upmove, 0) > 0)){
+						$h[$pkey] = $upmove;
+					}
+					else{
+						$h[$pkey] = 0;
+					}
+
+					if ((bccomp($downmove, $upmove) > 0) and (bccomp($downmove, 0) > 0)){
+						$h[$mkey] = $downmove;
+					}
+					else{
+						$h[$mkey] = 0;
+					}
+				}
+				$p = $h; $i++;
+			}
+		}
+
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::dm() = ".print_r($this->historial, true));
+
+		$keys = array($mkey, $pkey);
+		return $keys;
 	}
 
 	/**
@@ -436,41 +539,48 @@ class Rate{
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "private function rate::gain()");
 
-		$i = 1; $agkey = "average_gain$period"; $alkey = "average_loss$period";
-		foreach ($this->historial as &$h){	// Last element is most rescent
+		$agkey = 'average_gain('.$period.')'; $alkey = 'average_loss('.$period.')';
+		$t = end($this->historial);
 
-			if ($i < $period){
-				$k = $i;
-			}
-			else{
-				$k = $period;
-			}
-			if ($i == 1){			// First element needs default values
-				$h[$alkey] = 0;
-				$h[$agkey] = $h["close"];
-				$h["loss"] = 0;
-				$h["gain"] = $h["close"];
-			}
-			else{
-				$delta = bcsub($h["close"], $p["close"]);
-				if (bccomp($delta, 0) < 0){	// Loss
-					$h["loss"] = bcabs($delta);
-					$h["gain"] = 0;
+		if (!array_key_exists($agkey, $t) or !array_key_exists($alkey, $t)){
+			$i = 1; $k = 1; 
+			foreach ($this->historial as &$h){	// Last element is most the recent
+
+				if ($i < $period){
+					$k = $i;
 				}
 				else{
-					$h["loss"] = 0;
-					$h["gain"] = $delta;
+					$k = $period;
 				}
-				$k1 = $k - 1;
-				$h[$alkey] = bcdiv(bcadd(bcmul($p[$alkey], $k1, EXCHANGE_ROUND_DECIMALS * 2), $h["loss"], EXCHANGE_ROUND_DECIMALS * 2), $k, EXCHANGE_ROUND_DECIMALS * 2);
-				$h[$agkey] = bcdiv(bcadd(bcmul($p[$agkey], $k1, EXCHANGE_ROUND_DECIMALS * 2), $h["gain"], EXCHANGE_ROUND_DECIMALS * 2), $k, EXCHANGE_ROUND_DECIMALS * 2);
+				if ($i == 1){			// First element needs default values
+					$h[$alkey] = $h['close'];
+					$h[$agkey] = 0;
+					$h['loss'] = 0;
+					$h['gain'] = 0;
+				}
+				else{
+					$delta = bcsub($h['close'], $p['close']);
+					if (bccomp($delta, 0) < 0){	// Loss
+						$h['loss'] = bcabs(number_format($delta, EXCHANGE_ROUND_DECIMALS, '.', ''));
+						$h['gain'] = 0;
+					}
+					else{
+						$h['loss'] = 0;
+						$h['gain'] = number_format($delta, EXCHANGE_ROUND_DECIMALS, '.', '');
+					}
+					// Could be smma
+					$k1 = $k - 1;
+					$h[$alkey] = bcdiv(bcadd(bcmul($p[$alkey], $k1, EXCHANGE_ROUND_DECIMALS * 2), $h['loss'], EXCHANGE_ROUND_DECIMALS * 2), $k, EXCHANGE_ROUND_DECIMALS * 2);
+					$h[$agkey] = bcdiv(bcadd(bcmul($p[$agkey], $k1, EXCHANGE_ROUND_DECIMALS * 2), $h['gain'], EXCHANGE_ROUND_DECIMALS * 2), $k, EXCHANGE_ROUND_DECIMALS * 2);
+				}
+				$p = $h; $i++;
 			}
-			$p = $h; $i++;
 		}
-
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "private function rate::gain() = ".print_r($this->historial, true));
-		return $this->historial;
+
+		$keys = array('gain','loss',$alkey,$agkey);
+		return $keys;
 	}
 
 	/**
@@ -479,28 +589,34 @@ class Rate{
 	@retval float
 	Returns the RSI
 	*/
-	public function rsi($period = 14){
+	public function &rsi($period = 14){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::rsi($period)");
 
-		$this->gain($period);
-		//$this->exponential_key_average($period, "average_gain" , "gain");
-		//$this->exponential_key_average($period, "average_loss" , "loss");
+		$key = 'rsi('.$period.')';
+		$t = end($this->historial);
 
-		$key="rsi$period";
-		foreach ($this->historial as &$h){	// Last element is most rescent
-			if ($h["average_loss$period"] > 0){
-				$rs = bcdiv($h["average_gain$period"], $h["average_loss$period"], EXCHANGE_ROUND_DECIMALS * 2);
-				$h[$key] = bcsub(100, bcdiv(100, bcadd(1, $rs )));
-			}
-			else{
-				$h[$key] = 100;
+		if (!array_key_exists($key, $t)){
+			$this->gain($period);
+			$gain_key = $this->ema($period, 'gain'); // $gain_key = 'ema('.$period.',gain)';
+			$loss_key = $this->ema($period, 'loss'); // $loss_key = 'ema('.$period.',loss)';
+
+			foreach ($this->historial as &$h){	// Last element is most rescent
+				if (bccomp($h[$loss_key], 0, EXCHANGE_ROUND_DECIMALS * 2) > 0){
+					$rs = bcdiv($h[$gain_key], $h[$loss_key], EXCHANGE_ROUND_DECIMALS * 2);
+					//RSI = (100 – (100 / (1 + RS)))
+					$h[$key] = bcsub(100, bcdiv(100, bcadd(1, $rs, EXCHANGE_ROUND_DECIMALS * 2), EXCHANGE_ROUND_DECIMALS * 2), 2);
+				}
+				else{
+					$h[$key] = 100;
+				}
 			}
 		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::rsi($period) = ".print_r($this->historial, true));
-		return $this->historial;
+
+		return $key;
 	}
 
 	/**
@@ -513,41 +629,179 @@ class Rate{
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::macd($short_period, $long_period, $signal_period)");
 
-		$this->ema($short_period);
-		$this->ema($long_period);
-		$macdkey = "macd".$short_period."_".$long_period;
-		$skey = "ema$short_period";
-		$lkey = "ema$long_period";
-		$sigkey = $macdkey."_signal";
-		$dkey = $sigkey.$signal_period.'_delta';
-		foreach ($this->historial as &$h){
-			$h[$macdkey] = bcsub($h[$skey], $h[$lkey]);
+		$t = end($this->historial);
+		$macdkey = 'macd('.$short_period.','.$long_period.','.$signal_period.')';
+		$sigkey = 'signal('.$macdkey.')';
+		if (!array_key_exists($macdkey, $t)){
+			$skey = $this->ema($short_period, 'close'); // $skey = 'ema('.$short_period.',close)';
+			$lkey = $this->ema($long_period, 'close'); // $lkey = 'ema('.$long_period.',close)';
+
+			foreach ($this->historial as &$h){
+				$h[$macdkey] = bcsub($h[$skey], $h[$lkey]);
+			}
 		}
 
-		$this->exponential_key_average($signal_period, $sigkey, $macdkey);
+		$emasigkey = $this->ema($signal_period, $macdkey); // $emasigkey = 'ema('.$signal_period.','.$macdkey.')';
+		$this->rename_key($emasigkey, $sigkey);
+		$dkey = 'delta('.$macdkey.','.$sigkey.')';
 
-		foreach ($this->historial as &$h){
-			$h[$dkey] = bcsub($h[$macdkey], $h[$sigkey.$signal_period]);
+		if (!array_key_exists($dkey, $t)){
+			foreach ($this->historial as &$h){
+				$h[$dkey] = bcsub($h[$macdkey], $h[$sigkey]);
+			}
 		}
+		$keys = array($macdkey, $sigkey, $dkey);
+		return $keys;
 	}
 
 	/**
 	@param integer
 	The number of period for the atr
-	@retval float
+	@retval string
 	Returns the ATR
 	*/
 	public function atr($period = 14){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::atr($period)");
 
-		$this->tr(); // TODO: Find a way to save this call if TR has been called already
-		$this->exponential_key_average($period, "atr", "tr");
+		$t = end($this->historial);
+		$key = 'atr('.$period.')';
+
+		if (!array_key_exists($key, $t)){
+			$tr_key = $this->tr(); // TODO: Find a way to save this call if TR has been called already
+			$okey = $this->ema($period,$tr_key); // $okey = 'ema('.$period.',tr)';
+
+			// Rename ema(period,tr) new key into atr one
+			$this->rename_key($okey, $key);
+		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::atr($period) = ".print_r($this->historial, true));
-		return $this->historial;
+		return $key;
 	}
+
+	/**
+	@param integer
+	The number of period for the ADX
+	@retval float
+	Returns the ADX
+	*/
+	public function adx($period = 14){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::adx($period)");
+
+		$adx_key = 'adx('.$period.')';
+		$dx_key = 'dx()';
+		$pkey = '+di('.$period.')';
+		$mkey = '-di('.$period.')';
+		$t = end($this->historial);
+		if (!array_key_exists($mkey, $t) or !array_key_exists($pkey, $t) or !array_key_exists($adx_key, $t) or !array_key_exists($dx_key, $t)){
+			$tr_key = $this->tr(); // TODO: Find a way to save this call if TR has been called already
+			list($minus_dm_key, $plus_dm_key) = $this->dm(); // TODO: Find a way to save this call if DM has been called already
+			$sma_dmp_key = $this->sma($period, $plus_dm_key); // $sma_dmp_key = 'sma('.$period.',+dm)';
+			$sma_dmm_key = $this->sma($period, $minus_dm_key); // $sma_dmm_key = 'sma('.$period.',-dm)';
+			$sma_tr_key = $this->sma($period, $tr_key); // $sma_tr_key = 'sma('.$period.',tr)';
+			$tpkey = "t$pkey"; $tmkey = "t$mkey";
+
+			foreach ($this->historial as &$h){
+				$h[$tpkey] = bcabs(bcdiv($h[$sma_dmp_key], $h[$sma_tr_key], EXCHANGE_ROUND_DECIMALS * 2));
+				$h[$tmkey] = bcabs(bcdiv($h[$sma_dmm_key], $h[$sma_tr_key], EXCHANGE_ROUND_DECIMALS * 2));
+				$h[$pkey] = bcmul(100, $h[$tpkey], EXCHANGE_ROUND_DECIMALS * 2);
+				$h[$mkey] = bcmul(100, $h[$tmkey], EXCHANGE_ROUND_DECIMALS * 2);
+				unset($h[$tpkey], $h[$tmkey]);
+			}
+
+			foreach ($this->historial as &$h){
+				$sub = bcsub($h[$pkey], $h[$mkey]);
+				$add = bcadd($h[$pkey], $h[$mkey]);
+				if (bccomp($add, 0)){
+					$h[$dx_key] = bcabs(bcdiv($sub, $add, EXCHANGE_ROUND_DECIMALS * 2));
+				}
+				else{
+					$h[$dx_key] = 0;
+				}
+			}
+	//		$this->exponential_key_average($period, $key, $tkey);
+			$ttkey = $this->ema($period, $dx_key); // $ttkey = 'ema('.$period.','.$tkey.')';
+			foreach ($this->historial as &$h){
+				$h[$ttkey] = bcmul(100, $h[$ttkey]);
+			}
+
+			$this->rename_key($ttkey, $adx_key);
+		}
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::adx($period) = ".print_r($this->historial, true));
+		$keys = array($adx_key, $dx_key, $mkey, $pkey);
+		return $keys;
+	}
+
+	/**
+	@param integer
+	The number of period for the Smoothing Moving Average
+	@param string
+	Key to use
+    // https://mahifx.com/mfxtrade/indicators/smoothed-moving-average-smma
+    // The first value for the Smoothed Moving Average is calculated as a Simple Moving Average (SMA):
+    // 
+    // SUM1=SUM (CLOSE, N)
+    // 
+    // SMMA1 = SUM1/ N
+    // 
+    // The second and subsequent moving averages are calculated according to this formula:
+    // 
+    // SMMA (i) = (SUM1 – SMMA1+CLOSE (i))/ N
+    // 
+    // Where:
+    // 
+    // SUM1 – is the total sum of closing prices for N periods;
+    // SMMA1 – is the smoothed moving average of the first bar;
+    // SMMA (i) – is the smoothed moving average of the current bar (except the first one);
+    // CLOSE (i) – is the current closing price;
+    // N – is the smoothing period.	
+	*/
+	public function smma($period = 20, $index = 'close'){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::smma($period, $index)");
+		$key = 'smma('.$period.','.$index.')';
+		$t = end($this->historial);
+
+		if (!array_key_exists($key, $t)){
+			$sma_key = $this->sma($period, $index);
+			$buffer = array(); $i = 0; 
+			$k = $period - 1;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+	/*			array_push($buffer, $h[$index]);
+				if (count($buffer) > $period){
+					array_shift($buffer);
+				}
+				$sum = 0;
+				foreach ($buffer as $b){
+					$sum = bcadd($sum, $b, EXCHANGE_ROUND_DECIMALS * 2);
+				}
+
+				if ($i == 1){
+					$h[$key] = $h['sma_'.$index.$period];
+					$smma1 = $h[$key];
+				}
+				else{
+					$a = bcsub($sum, $smma1);
+					$b = bcadd($a, $h[$index]);
+					$h[$key] = bcdiv($b, $period, EXCHANGE_ROUND_DECIMALS * 2);
+				}
+	*/
+				if ($i == 1){
+					$h[$key] = $h[$sma_key];
+				}
+				else{
+					$h[$key] = bcdiv(bcadd(bcmul($p[$key], $k), $h[$index]), $period, EXCHANGE_ROUND_DECIMALS * 2);
+				}
+				$p = $h; $i++;
+			}
+		}
+
+		return $key;
+	}
+
 
 	/**
 	@param integer
@@ -557,24 +811,95 @@ class Rate{
 	*/
 	public function sma($period = 20, $index = 'close'){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::sma($period, $index)");
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::sma($period, $index)"); 
 
-		$buffer = array(); $i = 0; $key = 'sma_'.$index.$period;
-		foreach ($this->historial as &$h){	// Last element is most rescent
-			array_push($buffer, $h[$index]);
-			if (count($buffer) > $period){
-				array_shift($buffer);
+		$key = 'sma('.$period.','.$index.')';
+		$t = end($this->historial);
+
+		if (!array_key_exists($key, $t)){
+			$buffer = array(); $i = 0;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				array_push($buffer, $h[$index]);
+				if (count($buffer) > $period){
+					array_shift($buffer);
+				}
+				$sum = 0;
+				foreach ($buffer as $b){
+					$sum = bcadd($sum, $b, EXCHANGE_ROUND_DECIMALS * 2);
+				}
+				$h[$key] = bcdiv($sum, $period, EXCHANGE_ROUND_DECIMALS * 2);
 			}
-			$sum = 0;
-			foreach ($buffer as $b){
-				$sum = bcadd($sum, $b, EXCHANGE_ROUND_DECIMALS * 2);
-			}
-			$h[$key] = bcdiv($sum, count($buffer), EXCHANGE_ROUND_DECIMALS * 2);
 		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::sma($period, $index) = ".print_r($this->historial, true));
-		return $this->historial;
+		return $key;
+	}
+
+	/**
+	@param integer
+	The number of short period for the Awesome Oscillator
+	@param integer
+	The number of long period for the Awesome Oscillator
+	*/
+	public function ao($short = 5, $long = 34){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ao($short, $long)"); 
+
+		$t = end($this->historial);
+		$key = 'ao('.$short.','.$long.')';
+		$midkey = 'average(high,low)';
+		$key_color = 'ao_color('.$short.','.$long.')';
+		if (!array_key_exists($key, $t) or !array_key_exists($midkey, $t) or !array_key_exists($key_color, $t)){
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				$h[$midkey] = bcdiv(bcadd($h['high'], $h['low']), 2, EXCHANGE_ROUND_DECIMALS * 2);
+			}
+
+			$sma_short_key = $this->sma($short, $midkey);
+			$sma_long_key = $this->sma($long, $midkey);
+
+			$i = 1;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				$h[$key] = bcsub($h[$sma_short_key], $h[$sma_long_key]);
+				if ($i == 1){
+					$h[$key_color] = 'green';
+				}
+				else{
+					if (bccomp($h[$key], $p[$key]) > -1){
+						$h[$key_color] = 'green';
+					}
+					else{
+						$h[$key_color] = 'red';
+					}
+				}
+				$p = $h; $i++;
+			}
+		}
+
+		$keys = array($key, $key_color, $midkey);
+		return $keys;
+	}
+
+	/**
+	@param integer
+	The number of period for the Acellerator
+	*/
+	public function ac($period = 5){
+	if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::ac($period)");
+
+		$key = 'ac('.$period.')';
+		$t = end($this->historial);
+
+		if (!array_key_exists($key, $t)){
+			list($key_ao, $key_ao_color, $midkey) = $this->ao($period, 34);
+			$smakey = $this->sma($period, $key_ao);
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				$h[$key] = bcsub($h[$key_ao], $h[$smakey]);
+			}
+		}
+
+		return $key;
 	}
 
 	/**
@@ -587,10 +912,15 @@ class Rate{
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::bb($period, $stddev)");
 
-		$this->sma($period, 'close');
-		$buffer = array(); $i = 0; $keyhbb = 'bb_high'.$period.'_'.$stddev; $keylbb = 'bb_low'.$period.'_'.$stddev;
-		$bb_qz = 'bb_bw'.$period.'_'.$stddev; $keystd = 'stddev'.$period;
-		foreach ($this->historial as &$h){	// Last element is most rescent
+		$t = end($this->historial);
+		$keyhbb = 'bb_high('.$period.','.$stddev.')';
+		$keylbb = 'bb_low('.$period.','.$stddev.')';
+		$bb_qz = 'bb_bw('.$period.','.$stddev.')';
+		$keystd = 'stddev('.$period.')';
+		$sma_key = $this->sma($period, 'close');
+		if (!array_key_exists($keyhbb, $t) or !array_key_exists($keylbb, $t) or !array_key_exists($bb_qz, $t) or !array_key_exists($keystd, $t)){
+			$buffer = array(); $i = 0;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
 				array_push($buffer, $h['close']);
 				if (count($buffer) > $period){
 					array_shift($buffer);
@@ -598,15 +928,67 @@ class Rate{
 				if (count($buffer) > 1){
 					$std = stats_standard_deviation($buffer, true);
 					$h[$keystd] = $std;
-					$h[$keyhbb] = bcadd($h["sma_close".$period], bcmul($stddev, $std, EXCHANGE_ROUND_DECIMALS * 2));
-					$h[$keylbb] = bcsub($h["sma_close".$period], bcmul($stddev, $std, EXCHANGE_ROUND_DECIMALS * 2));
-					$h[$bb_qz] = bcdiv(bcsub($h[$keyhbb], $h[$keylbb], EXCHANGE_ROUND_DECIMALS * 2), $h["sma_close".$period]);
+					$h[$keyhbb] = bcadd($h[$sma_key], bcmul($stddev, $std, EXCHANGE_ROUND_DECIMALS * 2));
+					$h[$keylbb] = bcsub($h[$sma_key], bcmul($stddev, $std, EXCHANGE_ROUND_DECIMALS * 2));
+					$h[$bb_qz] = bcdiv(bcsub($h[$keyhbb], $h[$keylbb], EXCHANGE_ROUND_DECIMALS * 2), $h[$sma_key], EXCHANGE_ROUND_DECIMALS * 2);
 				}
+			}
 		}
 
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::bb($period, $stddev) = ".print_r($this->historial, true));
-		return $this->historial;
+		$keys = array($keylbb, $keyhbb, $bb_qz, $keystd, $sma_key);
+		return $keys;
+	}
+
+	/**
+	@param string
+	The number of period for the Simple Moving Average
+	@param integer
+	Key to use
+	*/
+	public function greater_smaller($period = 20, $index = 'close', $compare = 'open'){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::greater_smaller($period,$index,$compare)");
+
+		$greater_key = 'greater('.$period.','.$index.','.$compare.')';
+		$smaller_key = 'smaller('.$period.','.$index.','.$compare.')';
+		$compare_key = 'compare('.$index.','.$compare.')';
+		$t = end($this->historial);
+
+		if (!array_key_exists($greater_key, $t) or !array_key_exists($smaller_key, $t) or !array_key_exists($compare_key, $t)){
+			$buffer = array(); $i = 0;
+
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				$h[$compare_key] = bccomp($h[$index], $h[$compare]);
+				array_push($buffer, $h[$compare_key]);
+
+				if (count($buffer) > $period){
+					array_shift($buffer);
+				}
+
+				$h[$smaller_key] = 0;
+				$h[$greater_key] = 0;
+
+				if (count($buffer) > 1){
+					$array_count = array_count_values($buffer);
+					if (array_key_exists('-1', $array_count)){
+						$h[$smaller_key] += $array_count['-1'];
+					}
+
+					if (array_key_exists('0', $array_count)){
+						$h[$greater_key] += $array_count['0'];
+					}
+
+					if (array_key_exists('1', $array_count)){
+						$h[$greater_key] += $array_count['1'];
+					}
+				}
+			}
+		}
+
+		$keys = array($compare_key, $smaller_key, $greater_key);
+		return $keys;
 	}
 
 	/**
@@ -615,47 +997,54 @@ class Rate{
 	@param string
 	Key to use
 	*/
-	public function min_max($index = 'close'){
+	public function min_max($index = 'close', $decimals = EXCHANGE_ROUND_DECIMALS){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::min_max($index)");
 
-		$i = 0;
-		$minkey = "min_".$index;
-		$maxkey = "max_".$index;
-		$stepsminkey = 'steps_'.$minkey;
-		$stepsmaxkey = 'steps_'.$maxkey;
-		foreach ($this->historial as &$h){	// Last element is most rescent
-			if ($i == 0){
-				$h[$minkey] = $h[$index];
-				$h[$maxkey] = $h[$index];
-				$h[$stepsminkey] = 0;
-				$h[$stepsmaxkey] = 0;
-			}
-			else{
-				$h[$minkey] = bcmin($h[$index], $_last[$minkey]);
-				$h[$maxkey] = bcmax($h[$index], $_last[$maxkey]);
-
-				if (bccomp($h[$index], $h[$maxkey]) == -1){
-					$h[$stepsmaxkey] = $_last[$stepsmaxkey] + 1;
+		$c = round(count($this->historial)/2, 0);
+		$minkey = 'min('.$c.','.$index.')';
+		$maxkey = 'max('.$c.','.$index.')';
+		$stepsminkey = 'steps('.$minkey.')';
+		$stepsmaxkey = 'steps('.$maxkey.')';
+		$t = end($this->historial);
+		if (!array_key_exists($minkey, $t) or !array_key_exists($maxkey, $t) or !array_key_exists($stepsminkey, $t) or !array_key_exists($stepsmaxkey, $t)){
+			$i = 0;
+			foreach ($this->historial as &$h){	// Last element is the most rescent
+				if ($i < $c){
 				}
-				else{
+				elseif ($i == $c){
+					$h[$minkey] = number_format($h[$index], $decimals, '.', '');
+					$h[$maxkey] = number_format($h[$index], $decimals, '.', '');
+					$h[$stepsminkey] = 0;
 					$h[$stepsmaxkey] = 0;
 				}
-
-				if (bccomp($h[$index], $h[$minkey]) == 1){
-					$h[$stepsminkey] = $_last[$stepsminkey] + 1;
-				}
 				else{
+					bcscale($decimals);
+					$h[$minkey] = number_format(bcmin($h[$index], $p[$minkey]), $decimals, '.', '');
+					$h[$maxkey] = number_format(bcmax($h[$index], $p[$maxkey]), $decimals, '.', '');
+					bcscale(EXCHANGE_ROUND_DECIMALS);
+					$h[$stepsmaxkey] = 0;
 					$h[$stepsminkey] = 0;
-				}
 
+					if (bccomp($h[$index], $h[$maxkey], $decimals) == -1){
+						$h[$stepsmaxkey] = $p[$stepsmaxkey] + 1;
+					}
+
+					if (bccomp($h[$index], $h[$minkey], $decimals) == 1){
+						$h[$stepsminkey] = $p[$stepsminkey] + 1;
+					}
+
+				}
+				$i++; $p = $h;
 			}
-			$i++; $_last = $h;
 		}
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::min_max($index) = ".print_r($this->historial, true));
-		return $this->historial;
+
+		$keys = array($minkey, $maxkey, $stepsmaxkey, $stepsmaxkey);
+		return $keys;
 	}
+
 	/**
 	@param float
 	@retval boolean
@@ -692,6 +1081,8 @@ class Rate{
 		if (is_array($this->book) && count($this->book)){
 			$this->highest_bid = $this->book['bids'][0][0];
 			$this->lowest_ask = $this->book['asks'][0][0];
+			$this->spread = bcsub($this->lowest_ask, $this->highest_bid);
+			$this->percent_wise = bcdiv($this->spread, $this->lowest_ask, EXCHANGE_ROUND_DECIMALS * 2);
 		}
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function &rate::get_orders() = " . print_r($result,true));
@@ -722,5 +1113,53 @@ class Rate{
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function rate::cancel_order($order_number) = " . print_r($result,true));
 		return $result;
+	}
+
+	/**
+	@param string
+	The pair
+	@retval boolean
+	true if it exists
+	*/
+	
+	public function exists($pair){
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
+			syslog(LOG_INFO|LOG_LOCAL1, "public static function rate::exists($pair)");
+			
+		$key = 'exchange['.$this->name.']:ticker';
+		if (!is_object($this->exchange->memcached())){
+			$_pairs = $this->exchange->api->get_ticker();
+		}
+		else{
+			$_pairs = $this->exchange->memcached()->get($key);
+			if ($this->exchange->memcached()->getResultCode() != Memcached::RES_SUCCESS){
+				if (DEBUG)
+					syslog(LOG_INFO|LOG_LOCAL1, "Ticker NOT found in Memcached: $key");
+				$_pairs = $this->exchange->api->get_ticker();
+				if (is_array($_pairs)){
+					$this->exchange->memcached()->set($key, serialize($_pairs), MEMCACHED_TICKER_TTL);
+					if ((DEBUG) && ($this->memcached->getResultCode() == Memcached::RES_NOTSTORED)){
+						syslog(LOG_INFO|LOG_LOCAL1, "Ticker SET in Memcached: $key");
+					}
+				}
+				else{
+					throw new Exception('Exchangge class '.$this->name.' does not return a ticker.');
+				}
+			}
+			else{
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, 'Ticker found in Memcached '.$this->exchange->memcached()->getResultCode());
+				}
+				$_pairs = unserialize($_pairs);
+			}
+		}
+		
+		// we have all the pairs, now we are looking for them
+		$answer = array_key_exists($pair, $_pairs);	
+		
+		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS_OUTPUT))
+			syslog(LOG_INFO|LOG_LOCAL1, "public static function rate::exists($pair)");
+
+		return $answer;
 	}
 }

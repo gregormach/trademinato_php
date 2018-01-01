@@ -78,6 +78,8 @@
 			curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
 			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+			curl_setopt($ch, CURLOPT_TIMEOUT,20000);
+			curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
 
 			// run the query
 			$res = curl_exec($ch);
@@ -94,16 +96,46 @@
 		}
 
 		protected function retrieveJSON($URL) {
+			// TODO: Use cURL
+			static $ch = null;
+			if (is_null($ch)) {
+				$ch = curl_init();
+				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($ch, CURLOPT_HEADER, false);
+				curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+				curl_setopt($ch, CURLOPT_MAXREDIRS, 10);
+				curl_setopt($ch, CURLOPT_ENCODING, '');
+				curl_setopt($ch, CURLOPT_USERAGENT,
+					'Mozilla/4.0 (compatible; Poloniex PHP bot; '.php_uname('a').'; PHP/'.phpversion().')'
+				);
+				curl_setopt($ch, CURLOPT_AUTOREFERER, true);
+				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 20);
+				curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+			}
+			curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+			curl_setopt($ch, CURLOPT_URL, $URL);
+			$feed = curl_exec($ch);
+
+			if ($feed === false) throw new Exception('Curl error: '.curl_error($ch));
+/*
 			$opts = array('http' =>
-				array(
-					'method'  => 'GET',
-					'timeout' => 10
-				)
+						array(
+							'method'  => 'GET',
+							'timeout' => 20
+						),
+					'ssl' =>
+						array(
+							'verify_peer' => false,
+							'verify_peer_name' => false,
+							'ciphers' => 'HIGH:TLSv1.2:TLSv1.1:TLSv1.0:!SSLv3:!SSLv2'
+    						)
 			);
 			$context = stream_context_create($opts);
 			$feed = file_get_contents($URL, false, $context);
-			//echo $feed;
-			$json = json_decode($feed, true, 512, JSON_BIGINT_AS_STRING);
+*/
+//			syslog(LOG_INFO|LOG_LOCAL1, 'private function poloniex::retrieveJSON() URL: '. $URL . '=' . $feed);
+			$json = json_decode($feed, true, 1024, JSON_BIGINT_AS_STRING);
+//			syslog(LOG_INFO|LOG_LOCAL1, 'private function poloniex::retrieveJSON() JSON: '. print_r($json, true));
 			return $json;
 		}
 

@@ -29,6 +29,7 @@ class Exchange {
 	protected $candlestick_period;
 	protected $only_public;
 	protected $config;
+	private $base_market_currencies;
 
 	/**
 	@param $exchange_name
@@ -40,10 +41,11 @@ class Exchange {
 
 	*/
 
-	public function __construct($exchange_name, $exchange_config){
+	public function __construct($exchange_name, $exchange_config, $constant = 255){
 		if ((DEBUG & DEBUG_EXCHANGE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
-			syslog(LOG_INFO|LOG_LOCAL1, "public function exchange::__construct($exchange_name, ". print_r($exchange_config, true).")");
+			syslog(LOG_INFO|LOG_LOCAL1, "public function exchange::__construct($exchange_name, ". print_r($exchange_config, true).", $constant)");
 
+		date_default_timezone_set('GMT');
 		if (class_exists('Memcached')){
 			$this->memcached = new Memcached();
 			$this->memcached->addServer(MEMCACHED_SERVER,MEMCACHED_PORT);
@@ -61,6 +63,7 @@ class Exchange {
 		$this->api_key = $exchange_config['exchanges'][$this->name]['api_key'];
 		$this->api_secret = array_key_exists('secret_key', $exchange_config['exchanges'][$this->name])?$exchange_config['exchanges'][$this->name]['secret_key']:null;
 		$this->candlestick_period = array_key_exists('candlestick_period', $exchange_config['exchanges'][$this->name])?$exchange_config['exchanges'][$this->name]['candlestick_period']:900;
+		$this->base_market_currencies = array();
 
 		if (class_exists($exchange_name)){
 			if (!array_key_exists('api_key', $exchange_config['exchanges'][$this->name]) or !array_key_exists('secret_key', $exchange_config['exchanges'][$this->name])){
@@ -90,18 +93,22 @@ class Exchange {
 					// We work on worst case scenario possible
 					$this->make_comission = 0.0015;
 					$this->take_comission = 0.0025;
+					$this->base_market_currencies = array('BTC' => 2, 'ETH' => 1, 'XMR' => 1, 'USDT' => 3);
 					break;
 			}
 
 			if (!$this->only_public){
-				$this->get_wallets();
+				if ($constant & EXCHANGE_LOAD_WALLETS)
+					$this->get_wallets();
 			}
 
 			if (isset($exchange_config['exchanges'][$exchange_name]['pair'])){
-				$this->get_rates($exchange_config['exchanges'][$exchange_name]['pair']);
+				if ($constant & EXCHANGE_LOAD_RATES)
+					$this->get_rates($exchange_config['exchanges'][$exchange_name]['pair']);
 			}
 			else{
-				$this->get_rates();
+				if ($constant & EXCHANGE_LOAD_RATES)
+					$this->get_rates();
 			}
 		}
 		else{
@@ -170,14 +177,19 @@ class Exchange {
 		if ((DEBUG & DEBUG_EXCHANGE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function &exchange::get_wallet($currency)");
 
+		$currency = strtoupper($currency);
 		$_wallet = null;
+		if (is_array($this->wallets) and array_key_exists($currency, $this->wallets)){
+			$_wallet = $this->wallets[$currency];
+		}
+		/*
 		foreach ($this->wallets as $w){
 				if ($w->currency() == $currency){
 					$_wallet = $w;
 					break;
 				}
 		}
-
+		*/
 		return $_wallet;
 	}
 
@@ -197,9 +209,9 @@ class Exchange {
 			$_wallets = $this->api->get_balances();
 			$_addresses = $this->api->get_addresses();
 			$this->wallets = array();
-
 			foreach ($_wallets as $c => $v){
-				$this->wallets[$c] = new Wallet($this, $c, $v, array_key_exists($c, $_addresses)?$_addresses[$c]:null);
+				$cc = strtoupper($c);
+				$this->wallets[$cc] = new Wallet($this, $cc, $v, array_key_exists($c, $_addresses)?$_addresses[$c]:'');
 			}
 		return $this->wallets;
 		}
@@ -213,33 +225,40 @@ class Exchange {
 		if ((DEBUG & DEBUG_EXCHANGE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function &exchange::get_rates($pair)");
 
-		unset($this->rates);
 		$this->rates = array();
 
 		$key = "exchange[".$this->name."]:ticker";
+		if (!is_null($pair)){
+			$key .= ":$pair";
+		}
 		if (!is_object($this->memcached)){
 			$_pairs = $this->api->get_ticker();
 		}
 		else{
-			if (!($_pairs = $this->memcached->get($key))){
-				syslog(LOG_INFO|LOG_LOCAL1, "Ticker NOT found in Memcached: $key");
+			$_pairs = $this->memcached->get($key);
+			if ($this->memcached->getResultCode() != Memcached::RES_SUCCESS){
+				if (DEBUG)
+					syslog(LOG_INFO|LOG_LOCAL1, "Ticker NOT found in Memcached: $key");
 				$_pairs = $this->api->get_ticker();
-				if (count($_pairs)){
-					if ($this->memcached->set($key, serialize($_pairs), MEMCACHED_TICKER_TTL))
+				if (is_array($_pairs)){
+					$this->memcached->set($key, serialize($_pairs), MEMCACHED_TICKER_TTL);
+					if ((DEBUG) && ($this->memcached->getResultCode() == Memcached::RES_NOTSTORED)){
 						syslog(LOG_INFO|LOG_LOCAL1, "Ticker SET in Memcached: $key");
+					}
 				}
 				else{
-					throw new Exception('Exchangge class '.$exchange_name.' does not return a ticker.');
+					throw new Exception('Exchangge class '.$this->name.' does not return a ticker.');
 				}
 			}
 			else{
-				syslog(LOG_INFO|LOG_LOCAL1, "Ticker found in Memcached");
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, "Ticker found in Memcached ".$this->memcached->getResultCode());
+				}
 				$_pairs = unserialize($_pairs);
 			}
 		}
 
 		$_max_base_volume_market_share = array();
-
 		foreach ($_pairs as $p => $d){
 			if ((is_null($pair)) || (!is_null($pair) && $pair == $p)){
 				$last = $d['last'];
@@ -252,16 +271,18 @@ class Exchange {
 				$high_24hr = $d['high24hr'];
 				$low_24hr = $d['low24hr'];
 				list($from, $to) = $this->get_pairs($p);
-				if (!array_key_exists($p,$_max_base_volume_market_share) || ($_max_base_volume_market_share[$p] < $base_volume)){
-					$_max_base_volume_market_share[$p] = $base_volume;
+				if (!array_key_exists($from, $_max_base_volume_market_share)){
+					$_max_base_volume_market_share[$from] = $base_volume;
+				}
+				else{
+					$_max_base_volume_market_share[$from] = bcmax($_max_base_volume_market_share[$from], $base_volume);
 				}
 				$this->rates[$p] = new Rate($this, $from, $to, $last, $lowest_ask, $highest_bid, $percent_change, $base_volume, $quote_volume, $is_frozen, $high_24hr, $low_24hr);
 			}
 		}
 
 		foreach ($this->rates as $r){
-			$k = $r->from().'_'.$r->to();
-			$r->set_market_share($_max_base_volume_market_share[$k]);
+			$r->set_market_share($_max_base_volume_market_share[$r->from()]);
 		}
 
 		return $this->rates;
@@ -276,13 +297,19 @@ class Exchange {
 			syslog(LOG_INFO|LOG_LOCAL1, "public function &exchange::get_rate($pair)");
 		$this->get_rates($pair);
 		$_rate = null;
-		foreach ($this->rates as $r){
-			if ($r->pair() == $pair){
-				$_rate = $r;
-				break;
+		if (is_array($this->rates) and array_key_exists($pair, $this->rates)){
+			$_rate = $this->rates[$pair];
+		}
+		/*
+		if (count($this->rates)){
+			foreach ($this->rates as $r){
+				if ($r->pair() == $pair){
+					$_rate = $r;
+					break;
+				}
 			}
 		}
-
+		*/
 		return $_rate;
 	}
 
@@ -300,18 +327,25 @@ class Exchange {
 		}
 		else{
 			if (!($_orders = $this->memcached->get($key))){
-				syslog(LOG_INFO|LOG_LOCAL1, "Orders NOT found in Memcached: $key");
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, "Orders NOT found in Memcached: $key");
+				}
 				$_orders = $this->api()->get_order_book($pair);
 				if (count($_orders)){
-					if ($this->memcached->set($key, serialize($_orders), MEMCACHED_ORDERS_TTL))
-						syslog(LOG_INFO|LOG_LOCAL1, "Orders SET in Memcached: $key");
+					if ($this->memcached->set($key, serialize($_orders), MEMCACHED_ORDERS_TTL)){
+						if (DEBUG){
+							syslog(LOG_INFO|LOG_LOCAL1, "Orders SET in Memcached: $key");
+						}
+					}
 				}
 				else{
-					throw new Exception('Exchangge class '.$exchange_name.' does not return orders.');
+					throw new Exception('Exchangge class '.$this->name.' does not return orders.');
 				}
 			}
 			else{
-				syslog(LOG_INFO|LOG_LOCAL1, "Orders found in Memcached");
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, "Orders found in Memcached");
+				}
 				$_orders = unserialize($_orders);
 			}
 
@@ -340,18 +374,25 @@ class Exchange {
 		}
 		else{
 			if (!($_orders = $this->memcached->get($key))){
-				syslog(LOG_INFO|LOG_LOCAL1, "My orders NOT found in Memcached: $key");
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, "My orders NOT found in Memcached: $key");
+				}
 				$_orders = $this->api()->get_open_orders($pair);
 				if (count($_orders)){
-					if ($this->memcached->set($key, serialize($_orders), MEMCACHED_ORDERS_TTL))
-						syslog(LOG_INFO|LOG_LOCAL1, "My orders SET in Memcached: $key");
+					if ($this->memcached->set($key, serialize($_orders), MEMCACHED_ORDERS_TTL)){
+						if (DEBUG){
+							syslog(LOG_INFO|LOG_LOCAL1, "My orders SET in Memcached: $key");
+						}
+					}
 				}
 				else{
 					throw new Exception('Exchangge class '.$exchange_name.' does not return orders.');
 				}
 			}
 			else{
-				syslog(LOG_INFO|LOG_LOCAL1, "My orders found in Memcached");
+				if (DEBUG){
+					syslog(LOG_INFO|LOG_LOCAL1, "My orders found in Memcached");
+				}
 				$_orders = unserialize($_orders);
 			}
 
@@ -394,7 +435,7 @@ class Exchange {
 			return array();
 		}
 		else{
-			return $this->wallets;
+			return $this->get_wallets();
 		}
 	}
 
@@ -422,6 +463,14 @@ class Exchange {
 		}
 	}
 
+	/**
+	@retval array
+	Currencies
+	*/
+	public function &base_market_currencies(){
+		return $this->base_market_currencies;
+	}
+	
 	/**
 	@retval string
 	Comission
@@ -469,6 +518,7 @@ class Exchange {
 		if ((DEBUG & DEBUG_EXCHANGE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "public function exchange::get_historic_data($pair, $start, $end, $period)");
 		$_h = $this->api->get_chart_data($pair,$start,$end,$period);
+
 		if (is_array($_h) and count($_h)){
 			foreach ($_h as &$h){
 				$h['high'] = number_format($h['high'], EXCHANGE_ROUND_DECIMALS, ".", "");
@@ -540,4 +590,13 @@ class Exchange {
 			syslog(LOG_INFO|LOG_LOCAL1, "public function exchange::cancel_order($pair, $order_number)");
 		return $this->api->cancel_order($pair, $order_number);
 	}
+
+	/**
+	@retval object
+	Comission
+	*/
+	public function &memcached(){
+		return $this->memcached;
+	}
+
 }
