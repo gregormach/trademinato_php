@@ -14,7 +14,7 @@ class Wallet{
 		if ((DEBUG & DEBUG_WALLET) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "function wallet::__construct(\$exchange, $currency, $balance, $address)");
 
-		$this->exchange = $exchange;
+		$this->exchange = &$exchange;
 		$this->balance = $balance;
 		$this->address = is_null($address)?'':$address;
 		$this->currency = $currency;

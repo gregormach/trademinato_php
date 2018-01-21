@@ -13,14 +13,14 @@
 		protected $public_url = "https://poloniex.com/public";
 
 		public function __construct(){
-            $a = func_get_args();
-            $i = func_num_args();
-            if (method_exists($this,$f='__construct'.$i)) {
-                call_user_func_array(array($this,$f),$a);
-            }
-            else{
-                 throw new Exception('Incorrect number of parameters, 0, 2 or 4 only.');
-            }
+			$a = func_get_args();
+			$i = func_num_args();
+			if (method_exists($this,$f='__construct'.$i)) {
+				call_user_func_array(array($this,$f),$a);
+			}
+			else{
+				throw new Exception('Incorrect number of parameters, 0, 2 or 4 only.');
+			}
 		}
 
 		public function __construct0() {
@@ -42,6 +42,11 @@
 			$this->api_secret = $api_secret;
 			$this->trading_api_key = $trading_api_key;
 			$this->trading_api_secret = $trading_api_secret;
+		}
+
+		private function &getCh(){
+			static $ch;
+			return  $ch;
 		}
 
 		private function query(array $req = array()) {
@@ -66,7 +71,7 @@
 			);
 
 			// curl handle (initialize if required)
-			static $ch = null;
+			$ch = & $this->getCh();
 			if (is_null($ch)) {
 				$ch = curl_init();
 				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -78,9 +83,10 @@
 			curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
 			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
-			curl_setopt($ch, CURLOPT_TIMEOUT,20000);
+			curl_setopt($ch, CURLOPT_TIMEOUT, 20000);
 			curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
 
+			usleep(200);
 			// run the query
 			$res = curl_exec($ch);
 
@@ -97,7 +103,7 @@
 
 		protected function retrieveJSON($URL) {
 			// TODO: Use cURL
-			static $ch = null;
+			$ch = & $this->getCh();
 			if (is_null($ch)) {
 				$ch = curl_init();
 				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -108,12 +114,14 @@
 				curl_setopt($ch, CURLOPT_USERAGENT,
 					'Mozilla/4.0 (compatible; Poloniex PHP bot; '.php_uname('a').'; PHP/'.phpversion().')'
 				);
+				curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
 				curl_setopt($ch, CURLOPT_AUTOREFERER, true);
 				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 20);
-				curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+				curl_setopt($ch, CURLOPT_TIMEOUT, 20000);
 			}
 			curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
 			curl_setopt($ch, CURLOPT_URL, $URL);
+			usleep(200);
 			$feed = curl_exec($ch);
 
 			if ($feed === false) throw new Exception('Curl error: '.curl_error($ch));

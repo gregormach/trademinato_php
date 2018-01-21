@@ -40,7 +40,7 @@ class Rate{
 	function __construct(&$exchange, $from, $to, $last, $lowest_ask, $highest_bid, $percent_change, $base_volume, $quote_volume, $is_frozen, $high_24hr, $low_24hr){
 		if ((DEBUG & DEBUG_RATE) && (DEBUG & DEBUG_TRACE_FUNCTIONS))
 			syslog(LOG_INFO|LOG_LOCAL1, "function rate::__construct(\$exchange, $from, $to, $last, $lowest_ask, $highest_bid, $percent_change, $base_volume, $quote_volume, $is_frozen, $high_24hr, $low_24hr)");
-		$this->exchange = $exchange;
+		$this->exchange = &$exchange;
 		$this->from = $from;
 		$this->to = $to;
 		$this->last = $last;

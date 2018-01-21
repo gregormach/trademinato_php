@@ -24,7 +24,7 @@ define ('EXIT_FAIL_EXCHANGE',					0b10000001);
 define ('EXIT_FAIL_TRADEMINATOR_CONNECTION',			0b10000011);
 define ('EXIT_FAIL_REQUIREMENTS',				0b10000100);
 
-define ('DIRECTOR_COMMAND_LINE', 'timeout --preserve-status 35 php client/trader.php -f client/config.yaml');
+define ('DIRECTOR_COMMAND_LINE', 'timeout --preserve-status 45 php client/trader.php -f client/config.yaml');
 //define ('DIRECTOR_COMMAND_LINE', 'php client/trader.php -f client/config.yaml');
 
 define ('EXCHANGE_EMA_ALGORITHM_HIT',			0b00000001);
